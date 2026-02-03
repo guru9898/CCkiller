@@ -6,7 +6,8 @@ import aiohttp
 import re
 import random
 from datetime import datetime
-from luhn import verify  # pip install python-luhn (FREE)
+import luhn  # pip install python-luhn
+  # pip install python-luhn (FREE)
 import logging
 
 # === ONE TIME SETUP ONLY ===
