@@ -1,113 +1,93 @@
-import asyncio
-import logging
+import telebot
 import re
 import random
-from aiogram import Bot, Dispatcher, executor, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-import urllib.request
-import urllib.parse
-import ssl
+import requests
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
-# YOUR INFO
 BOT_TOKEN = "8268191244:AAFVk-Y-T3wmCt25otqjZj_ol6vqgwknWLE"
-ADMIN_ID = 6751771375  # @userinfobot
+ADMIN_ID = 6751771375  # YOUR TG ID
 
-bot = Bot(token=BOT_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
-
-logging.basicConfig(level=logging.INFO)
+bot = telebot.TeleBot(BOT_TOKEN)
 
 GATES = [
-    "http://httpbin.org/post",
-    "http://jsonplaceholder.typicode.com/posts",
-    "http://postman-echo.com/post"
+    "https://httpbin.org/post",
+    "https://jsonplaceholder.typicode.com/posts",
+    "https://postman-echo.com/post"
 ]
 
 def luhn_checksum(card_number):
-    def digits_of(n):
-        return [int(d) for d in str(n)]
-    digits = digits_of(card_number)
+    digits = [int(d) for d in card_number]
     odd_digits = digits[-1::-2]
     even_digits = digits[-2::-2]
     checksum = sum(odd_digits)
     for d in even_digits:
-        checksum += sum(digits_of(d * 2))
+        checksum += sum(divmod(d*2, 10))
     return checksum % 10 == 0
 
 def parse_cc(line):
-    clean = re.sub(r'[ -]', '', line.strip())
+    clean = re.sub(r'[ -/]', '', line.strip())
     match = re.match(r'(\d{13,19})[^\d]*(\d{2})?[^\d]*(\d{2,4})?[^\d]*(\d{3,4})?', clean)
     if match:
         num, mon, yr, cvv = match.groups()
-        return f"{num}|{mon or random.choice(['12','11','10'])}|{yr or random.choice(['28','29','27'])}|{cvv or str(random.randint(100,999))}"
+        return f"{num}|{mon or '12'}|{yr or '28'}|{cvv or '123'}"
     return None
 
 def check_cc(cc):
     num, mon, yr, cvv = cc.split('|')
     
     if not luhn_checksum(num):
-        return "💀 Luhn FAIL"
+        return "💀 LUHN FAIL"
     
-    data = urllib.parse.urlencode({
+    data = {
         'cardNumber': num,
         'expMonth': mon,
         'expYear': yr,
         'cvc': cvv,
         'amount': '1.00'
-    }).encode()
-    
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    }
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)',
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
     
     try:
-        req = urllib.request.Request(random.choice(GATES), data=data, 
-                                   headers={'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)'})
-        with urllib.request.urlopen(req, context=ctx, timeout=10) as response:
-            status = response.status
-            return f"🔥 LIVE ({status})" if status < 400 else f"❌ DECLINED ({status})"
-    except Exception as e:
-        return f"⚠️ TIMEOUT ({str(e)[:20]})"
+        resp = requests.post(random.choice(GATES), data=data, headers=headers, timeout=10)
+        status = resp.status_code
+        return f"🔥 LIVE ({status})" if status < 400 else f"❌ DEAD ({status})"
+    except:
+        return "⚠️ TIMEOUT/ERROR"
 
-@dp.message_handler(commands=['start', 'help'])
-async def start_handler(message: types.Message):
-    await message.reply(
+@bot.message_handler(commands=['start', 'help'])
+def start(message):
+    bot.reply_to(message, 
         "🔥 **CC KILLER FREE v2026** 🔥\n\n"
-        "📤 Send CCs:\n"
+        "📤 Send:\n"
         "`4111111111111111|12|28|123`\n"
-        "`4532 0151 1283 0366 | 12/28 | 123`\n\n"
-        "**FREE FOREVER** - No VPS needed!\n"
-        f"Admin: `{ADMIN_ID}`"
-    )
+        "`4532015112830366 12/28 123`\n\n"
+        "**Max 50 CCs/batch**\n"
+        f"Admin: `{ADMIN_ID}`\n"
+        "💀 FREE FOREVER")
 
-@dp.message_handler()
-async def cc_checker(message: types.Message):
+@bot.message_handler(func=lambda m: True)
+def checker(message):
     lines = message.text.split('\n')
-    ccs = []
-    
-    for line in lines:
-        if cc := parse_cc(line):
-            ccs.append(cc)
+    ccs = [parse_cc(line) for line in lines if parse_cc(line)]
     
     if not ccs:
-        await message.reply("❌ No valid CCs found")
+        bot.reply_to(message, "❌ No valid CCs")
         return
     
-    await message.reply(f"🔥 Killing **{len(ccs)}** CCs...")
+    bot.reply_to(message, f"🔥 Checking **{len(ccs)}** CCs...")
     
-    # Process 20 at a time
-    for i in range(0, len(ccs), 20):
-        batch = ccs[i:i+20]
-        for cc in batch:
-            result = check_cc(cc)
-            await message.reply(f"`{cc}`\n**{result}**")
-            await asyncio.sleep(0.5)  # Rate limit
-        
-        if i + 20 < len(ccs):
-            await asyncio.sleep(2)
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(check_cc, cc) for cc in ccs[:50]]
+        for future in futures:
+            result = future.result()
+            cc = futures.index(future)  # Simplified
+            bot.reply_to(message, f"`{ccs[futures.index(future)]}` → **{result}**")
+            time.sleep(0.5)  # Rate limit
 
-if __name__ == '__main__':
-    print("🚀 CC KILLER STARTED FOREVER")
-    executor.start_polling(dp, skip_updates=True)
-
+print("🚀 CC KILLER LIVE FOREVER")
+bot.polling(none_stop=True)
